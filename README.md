@@ -50,9 +50,10 @@ Requires Python `>=3.12`, `jax>=0.11.2,<0.12`, and a TPU (tested on TPU v6e and 
 - Data types: Inputs are upcast to float32 internally. Setting `precision="bf16"` uses bfloat16 matrix multiplication operands and keeps intermediate chunk matrices in bfloat16, with float32 accumulation and float32 carried state. Output matches the dtype of `v`. Gradients are returned in each input's dtype.
 - Grouped heads: Value head `j` corresponds to key head `j // G`, where `G = Hv // Hk`. If `g` or `beta` has `Hv` heads, `q` and `k` repeat across `Hv` heads.
 - Packed documents: `segment_ids` of shape `(B, L)` resets hidden state where the ID changes; this is the preferred, jit-friendly document boundary representation. `cu_seqlens` (1D array or list) is also supported and applies document boundaries to every batch row.
-- State: Carried recurrent state tensor has shape `(B, Hv, K, V)` in float32.
+- State: Carried recurrent state tensor has shape `(B, Hv, K, V)` in float32. In decode, `state_dtype="bfloat16"` allows storing the recurrent state in HBM as bfloat16 between steps (halves the state's bytes), while internal updates execute in float32. Note: bf16 state validated for channel-wise GDN-2 only; scalar-decay decode not validated.
+- Prologue fusion: Passing `fuse_prologue=True` fuses decay exponentiation, gate sigmoids, and q/k L2-normalization directly into the Pallas VMEM prepass kernel. Under `fuse_prologue=True`, g, b, and w are pre-activation inputs: g is the raw log decay magnitude (`g_act = -exp(min(g, 5.0))`), b is the erase gate logit (`b_act = sigmoid(b)`), and w is the write gate logit (`w_act = sigmoid(w)`). Requires `qk_l2norm=True`. In backward, exact analytical adjoints are evaluated directly in VMEM instead of materializing activated intermediate tensors.
 - Training: Use `jax.value_and_grad` on your loss function. Checkpoint tags (`gdn_W`, `gdn_U`, `gdn_M`, `gdn_qe`, `gdn_ke`, `gdn_lend`, `gdn_T`) allow remat (rematerialization: trading compute for memory by recomputing forward operations during backward); JAX checkpoint policies match these names from inside the custom VJP. `is_inference=True` is forward-only and raises ValueError if differentiated.
-- Decode: `gdn2_decode_step` and variant decode steps process single tokens of shape `(B, Hk, K)` and `(B, Hv, V)`, with optional `reset=` boolean per batch row.
+- Decode: `gdn2_decode_step` and variant decode steps process single tokens of shape `(B, Hk, K)` and `(B, Hv, V)`, with optional `reset=` boolean per batch row and optional `state_dtype=` (`"float32"` or `"bfloat16"`, defaulting to `"float32"`). Note: bf16 state validated for channel-wise GDN-2 only; scalar-decay decode not validated.
 
 ## Supported Variants
 
@@ -129,6 +130,7 @@ When `Hv > Hk` (grouped value heads), key-side operations execute once per key h
 
 Kernel outputs and gradients are verified against a token-serial reference (`reference.py`):
 - Parity: relative L2 error within 1e-5 in fp32 and 1e-2 in bf16 across lengths L in {128, 256, 512, 8192} on TPU.
+- Fused prologue parity: `fuse_prologue=True` outputs, final states, and input gradients (dq, dk, dv, dg, db, dw) match reference execution within 1e-5 relative L2 error in fp32 (1e-2 in bf16) across aligned and unaligned lengths (L in {128, 300, 384}), with document resets (`segment_ids`), initial states, and custom query scale (see `tests/test_parity.py`).
 - Real-model parity: `examples/qwen3_5_layer_parity.py` loads Qwen3.5 linear attention layer 0 weights and verifies the recurrence core at sequence length 128 and one decode step against Hugging Face `transformers` 5.19.0 in fp32 on CPU. Relative L2 errors are 3.6e-7 (Qwen3.5-2B prefill), 4.2e-7 (Qwen3.5-4B prefill), 1.7e-7 (Qwen3.5-2B decode), and 2.2e-7 (Qwen3.5-4B decode). Results are recorded in `benchmarks/results/qwen3_5_parity_results.json` and `benchmarks/results/qwen3_5_4b_parity_results.json`.
 - Arbitrary lengths: dynamic padding verified for sequence lengths L in {1, 127, 1000, 8191}.
 - Causality: inputs at future positions produce zero change in past outputs and gradients.
@@ -137,6 +139,7 @@ Kernel outputs and gradients are verified against a token-serial reference (`ref
 - State continuity: passing recurrent state between split chunks matches single-call execution.
 - Sharding: numerical outputs match within 1e-5 under `jax.shard_map` across batch and head partitions on a 1-device mesh.
 - Inference: split prefill chunks match single-call execution; N decode steps match chunked execution with document resets.
+- Hardware test suite: 318 unit and matrix tests pass on physical Google Cloud TPU v6e (Trillium) and TPU v5e hardware; raw logs available in `benchmarks/results/tpu_v6e_test_0.2.0.log` and `benchmarks/results/tpu_v5e_test_0.2.0.log`.
 
 ## Benchmarks
 

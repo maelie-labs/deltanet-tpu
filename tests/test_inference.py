@@ -128,3 +128,59 @@ def test_decode_step_3d_inputs():
     o, new_state = gdn2_decode_step(q, k, v, g, b, w, state)
     assert o.shape == (B, Hv, V)
     assert new_state.shape == (B, Hv, K, V)
+
+
+@pytest.mark.parametrize("target_dtype", ["bfloat16", "float32", jnp.bfloat16, jnp.float32])
+def test_decode_step_state_dtype(target_dtype):
+    """Verify state_dtype controls the dtype of the recurrent state in gdn2_decode_step."""
+    B, Hk, Hv, K, V = 1, 2, 4, 128, 128
+    key = jax.random.PRNGKey(123)
+    k0, k1, k2, k3, k4, k5 = jax.random.split(key, 6)
+
+    q = jax.random.normal(k0, (B, Hk, K), dtype=jnp.float32)
+    k = jax.random.normal(k1, (B, Hk, K), dtype=jnp.float32)
+    v = jax.random.normal(k2, (B, Hv, V), dtype=jnp.float32)
+    g = -jnp.ones((B, Hk, K), dtype=jnp.float32)
+    b = jnp.ones((B, Hk, K), dtype=jnp.float32) * 0.5
+    w = jnp.ones((B, Hv, V), dtype=jnp.float32) * 0.5
+    state = jnp.zeros((B, Hv, K, V), dtype=jnp.float32)
+
+    o, new_state = gdn2_decode_step(q, k, v, g, b, w, state, state_dtype=target_dtype)
+    expected_dtype = jnp.dtype(target_dtype)
+    assert new_state.dtype == expected_dtype, f"Expected {expected_dtype}, got {new_state.dtype}"
+
+    # Verify that without state_dtype, output state defaults to float32 (preserving v0.1.0 behavior)
+    state_bf16 = jnp.zeros((B, Hv, K, V), dtype=jnp.bfloat16)
+    o2, new_state_default = gdn2_decode_step(q, k, v, g, b, w, state_bf16)
+    assert new_state_default.dtype == jnp.float32, f"Expected float32 default, got {new_state_default.dtype}"
+
+
+def test_decode_step_bf16_multistep_loop():
+    """Verify multi-step decode loop with bf16 state vs fp32 state across 10 steps."""
+    B, Hk, Hv, K, V = 1, 2, 4, 128, 128
+    num_steps = 10
+    key = jax.random.PRNGKey(42)
+
+    s_fp32 = jnp.zeros((B, Hv, K, V), dtype=jnp.float32)
+    s_bf16 = jnp.zeros((B, Hv, K, V), dtype=jnp.bfloat16)
+
+    for step in range(num_steps):
+        key, subkey = jax.random.split(key)
+        k0, k1, k2, k3, k4, k5 = jax.random.split(subkey, 6)
+        q = jax.random.normal(k0, (B, Hk, K), dtype=jnp.float32) * 0.1
+        k = jax.random.normal(k1, (B, Hk, K), dtype=jnp.float32) * 0.1
+        v = jax.random.normal(k2, (B, Hv, V), dtype=jnp.float32) * 0.1
+        g = -jnp.exp(jax.random.normal(k3, (B, Hk, K), dtype=jnp.float32) * 0.39 - 1.0)
+        b = jax.nn.sigmoid(jax.random.normal(k4, (B, Hk, K), dtype=jnp.float32) * 0.39)
+        w = jax.nn.sigmoid(jax.random.normal(k5, (B, Hv, V), dtype=jnp.float32) * 0.39)
+
+        o_fp32, s_fp32 = gdn2_decode_step(q, k, v, g, b, w, s_fp32, state_dtype="float32")
+        o_bf16, s_bf16 = gdn2_decode_step(q, k, v, g, b, w, s_bf16, state_dtype="bfloat16")
+
+        assert s_bf16.dtype == jnp.bfloat16
+        assert s_fp32.dtype == jnp.float32
+
+        rel_o = float(jnp.linalg.norm(o_bf16 - o_fp32) / (jnp.linalg.norm(o_fp32) + 1e-12))
+        rel_s = float(jnp.linalg.norm(s_bf16.astype(jnp.float32) - s_fp32) / (jnp.linalg.norm(s_fp32) + 1e-12))
+        assert rel_o < 1e-2, f"Step {step} output relative diff {rel_o:.4e} exceeds 1e-2"
+        assert rel_s < 1e-2, f"Step {step} state relative diff {rel_s:.4e} exceeds 1e-2"

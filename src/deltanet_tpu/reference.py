@@ -29,6 +29,7 @@ def token_serial_gdn2(
     output_final_state: bool = False,
     scale: float | None = None,
     qk_l2norm: bool = False,
+    fuse_prologue: bool = False,
 ) -> jax.Array | tuple[jax.Array, jax.Array]:
     """Token-serial ground truth scan for GDN-2 in pure JAX.
 
@@ -45,6 +46,7 @@ def token_serial_gdn2(
         output_final_state: Whether to return the final state alongside output.
         scale: Softmax/query scaling factor. Defaults to 1.0 / sqrt(K).
         qk_l2norm: Whether to apply in-kernel L2 norm to query and key. Defaults to False.
+        fuse_prologue: Fuse decay exponentiation, gate sigmoids, and q/k L2-norm into inputs. Defaults to False.
 
     Returns:
         Output tensor of shape (B, L, Hv, V), or tuple of (output, final_state)
@@ -57,15 +59,25 @@ def token_serial_gdn2(
     if scale is None:
         scale = 1.0 / math.sqrt(K)
 
-    # In-kernel L2 normalization
-    if qk_l2norm:
-        q_eps = jnp.array(1e-6, dtype=q.dtype)
-        k_eps = jnp.array(1e-6, dtype=k.dtype)
+    if fuse_prologue:
         scale_val = jnp.array(scale, dtype=q.dtype)
-        q = (q / jnp.sqrt(jnp.sum(q ** 2, axis=-1, keepdims=True) + q_eps)) * scale_val
-        k = k / jnp.sqrt(jnp.sum(k ** 2, axis=-1, keepdims=True) + k_eps)
+        rq = jax.lax.rsqrt(jnp.sum(q * q, axis=-1, keepdims=True) + 1e-6)
+        rk = jax.lax.rsqrt(jnp.sum(k * k, axis=-1, keepdims=True) + 1e-6)
+        q = (q * rq) * scale_val
+        k = k * rk
+        g = -jnp.exp(jnp.minimum(g, 5.0))
+        b = jax.nn.sigmoid(b)
+        w = jax.nn.sigmoid(w)
     else:
-        q = q * jnp.array(scale, dtype=q.dtype)
+        # In-kernel L2 normalization
+        if qk_l2norm:
+            q_eps = jnp.array(1e-6, dtype=q.dtype)
+            k_eps = jnp.array(1e-6, dtype=k.dtype)
+            scale_val = jnp.array(scale, dtype=q.dtype)
+            q = (q / jnp.sqrt(jnp.sum(q ** 2, axis=-1, keepdims=True) + q_eps)) * scale_val
+            k = k / jnp.sqrt(jnp.sum(k ** 2, axis=-1, keepdims=True) + k_eps)
+        else:
+            q = q * jnp.array(scale, dtype=q.dtype)
 
     # Grouped value heads: repeat key-side along heads to match Hv
     if G > 1:

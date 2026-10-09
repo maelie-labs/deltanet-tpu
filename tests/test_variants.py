@@ -478,3 +478,35 @@ def test_decode_step_hk1(Hk, Hv):
     )
     assert rel_l2(o_dr, o_dr_c[:, 0]) < 1e-5
     assert rel_l2(s_dr, s_dr_c) < 1e-5
+
+
+@pytest.mark.parametrize("target_dtype", ["bfloat16", "float32", jnp.bfloat16, jnp.float32])
+def test_variant_decode_state_dtype(target_dtype):
+    """Verify that all variant decode steps support the state_dtype parameter."""
+    B, Hk, Hv, K, V = 1, 2, 4, 128, 128
+    key = jax.random.PRNGKey(909)
+    k0, k1, k2, k3, k4 = jax.random.split(key, 5)
+
+    q = jax.random.normal(k0, (B, Hk, K), jnp.float32) * 0.1
+    k = jax.random.normal(k1, (B, Hk, K), jnp.float32) * 0.1
+    v = jax.random.normal(k2, (B, Hv, V), jnp.float32) * 0.1
+    g = -jnp.exp(jax.random.normal(k3, (B, Hk, K), jnp.float32) - 1.0)
+    beta = jax.nn.sigmoid(jax.random.normal(k4, (B, Hk, 1), jnp.float32) * 0.39)
+    state = jnp.zeros((B, Hv, K, V), dtype=jnp.float32)
+    expected_dtype = jnp.dtype(target_dtype)
+
+    # GDN
+    _, s_gdn = gdn_decode_step(q, k, v, g[:, :, :1], beta, state, state_dtype=target_dtype)
+    assert s_gdn.dtype == expected_dtype
+
+    # KDA
+    _, s_kda = kda_decode_step(q, k, v, g, beta, state, state_dtype=target_dtype)
+    assert s_kda.dtype == expected_dtype
+
+    # GLA
+    _, s_gla = gla_decode_step(q, k, v, g, state, state_dtype=target_dtype)
+    assert s_gla.dtype == expected_dtype
+
+    # DeltaRule
+    _, s_dr = delta_rule_decode_step(q, k, v, beta, state, state_dtype=target_dtype)
+    assert s_dr.dtype == expected_dtype

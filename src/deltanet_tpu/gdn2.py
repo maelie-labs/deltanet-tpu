@@ -100,7 +100,9 @@ def _prepass_chunk_fwd_kernel(
     q_ref, k_ref, v_ref, g_ref, b_ref, w_ref, seg_ref,
     w_out_ref, u_out_ref, m_out_ref, qe_out_ref, ke_out_ref, decay_out_ref,
     *extra_out_refs,
-    chunk_size: int, BC: int, NS: int, K: int, V: int, prec
+    chunk_size: int, BC: int, NS: int, K: int, V: int, prec,
+    fuse_prologue: bool = False,
+    scale: float | None = None,
 ):
     q_c = q_ref[0, :, :].astype(jnp.float32)
     k_c = k_ref[0, :, :].astype(jnp.float32)
@@ -110,9 +112,25 @@ def _prepass_chunk_fwd_kernel(
     w_c = w_ref[0, :, :].astype(jnp.float32)
     seg_c = seg_ref[0, 0, 0, :, 0]
 
+    if fuse_prologue:
+        scale_val = scale if scale is not None else 1.0 / math.sqrt(K)
+        rq = jax.lax.rsqrt(jnp.sum(q_c * q_c, axis=-1, keepdims=True) + 1e-6)
+        rk = jax.lax.rsqrt(jnp.sum(k_c * k_c, axis=-1, keepdims=True) + 1e-6)
+        q_act = (q_c * rq) * scale_val
+        k_act = k_c * rk
+        g_act = -jnp.exp(jnp.minimum(g_c, 5.0))
+        b_act = jax.nn.sigmoid(b_c)
+        w_act = jax.nn.sigmoid(w_c)
+    else:
+        q_act = q_c
+        k_act = k_c
+        g_act = g_c
+        b_act = b_c
+        w_act = w_c
+
     tril_ones = jnp.tril(jnp.ones((chunk_size, chunk_size), dtype=jnp.float32))
-    Lambda = jnp.matmul(tril_ones, g_c, precision=jax.lax.Precision.HIGHEST, preferred_element_type=jnp.float32)
-    beta = b_c * k_c
+    Lambda = jnp.matmul(tril_ones, g_act, precision=jax.lax.Precision.HIGHEST, preferred_element_type=jnp.float32)
+    beta = b_act * k_act
 
     iota_bc = jnp.arange(BC)
     strictly_lower_bc = (iota_bc[:, None] > iota_bc[None, :])
@@ -124,13 +142,13 @@ def _prepass_chunk_fwd_kernel(
         G_ref = Lambda[sa:sa+1, :]
         exp_row = jnp.exp(Lambda[sa:ea, :] - G_ref)
         b_a = beta[sa:ea, :] * exp_row
-        q_a = q_c[sa:ea, :] * exp_row
+        q_a = q_act[sa:ea, :] * exp_row
 
         row_a_A, row_a_M = [], []
         for b_idx in range(a):
             sb, eb = b_idx * BC, (b_idx + 1) * BC
             exp_col_off = jnp.exp(G_ref - Lambda[sb:eb, :])
-            k_b = k_c[sb:eb, :] * exp_col_off
+            k_b = k_act[sb:eb, :] * exp_col_off
             A_ab = jnp.matmul(b_a, k_b.T, precision=jax.lax.Precision.HIGHEST, preferred_element_type=jnp.float32)
             M_ab = jnp.matmul(q_a, k_b.T, precision=jax.lax.Precision.HIGHEST, preferred_element_type=jnp.float32)
             row_a_A.append(A_ab)
@@ -139,8 +157,8 @@ def _prepass_chunk_fwd_kernel(
         Lambda_a = Lambda[sa:ea, :]
         decay_diag = jnp.exp(_nonpositive(Lambda_a[:, None, :] - Lambda_a[None, :, :]))
         b_a_raw = beta[sa:ea, :]
-        q_a_raw = q_c[sa:ea, :]
-        k_a_raw = k_c[sa:ea, :]
+        q_a_raw = q_act[sa:ea, :]
+        k_a_raw = k_act[sa:ea, :]
 
         A_aa = jnp.where(strictly_lower_bc, jnp.sum((b_a_raw[:, None, :] * decay_diag) * k_a_raw[None, :, :], axis=-1), 0.0)
         M_aa = jnp.where(lower_bc, jnp.sum((q_a_raw[:, None, :] * decay_diag) * k_a_raw[None, :, :], axis=-1), 0.0)
@@ -168,23 +186,23 @@ def _prepass_chunk_fwd_kernel(
 
     same_doc_as_start = (seg_c[:, None] == seg_c[0])
     beta_exp = beta * jnp.exp(_nonpositive(Lambda))
-    q_exp = q_c * jnp.exp(_nonpositive(Lambda))
+    q_exp = q_act * jnp.exp(_nonpositive(Lambda))
     beta_exp_masked = jnp.where(same_doc_as_start, beta_exp, 0.0)
     q_exp_masked = jnp.where(same_doc_as_start, q_exp, 0.0)
 
     seg_end = jax.lax.slice(seg_c, (chunk_size - 1,), (chunk_size,))
     same_doc_as_end = (seg_c[:, None] == seg_end[None, :])
     Lambda_end = jax.lax.slice(Lambda, (chunk_size - 1, 0), (chunk_size, K))
-    k_to_end = k_c * jnp.exp(_nonpositive(Lambda_end - Lambda))
+    k_to_end = k_act * jnp.exp(_nonpositive(Lambda_end - Lambda))
     k_to_end_masked = jnp.where(same_doc_as_end, k_to_end, 0.0)
 
     T = _invert_unit_triangular_core(A, precision=jax.lax.Precision.HIGHEST)
 
     if prec == jax.lax.Precision.HIGHEST:
         W = jnp.matmul(T, beta_exp_masked, precision=prec)
-        U = jnp.matmul(T, w_c * v_c, precision=prec)
+        U = jnp.matmul(T, w_act * v_c, precision=prec)
     else:
-        wv = (w_c * v_c).astype(jnp.bfloat16)
+        wv = (w_act * v_c).astype(jnp.bfloat16)
         T_bf16 = T.astype(jnp.bfloat16)
         W = jnp.matmul(T_bf16, beta_exp_masked.astype(jnp.bfloat16), precision=prec, preferred_element_type=jnp.float32)
         U = jnp.matmul(T_bf16, wv, precision=prec, preferred_element_type=jnp.float32)
@@ -442,7 +460,9 @@ def _prepass_chunk_bwd_kernel(
     q_ref, k_ref, v_ref, g_ref, b_ref, w_ref, seg_ref,
     dw_ref, du_ref, dm_ref, dqe_ref, dke_ref, ddecay_ref,
     *args,
-    chunk_size: int, BC: int, K: int, V: int, prec
+    chunk_size: int, BC: int, K: int, V: int, prec,
+    fuse_prologue: bool = False,
+    scale: float | None = None,
 ):
     if len(args) == 7:
         t_ref = args[0]
@@ -469,12 +489,44 @@ def _prepass_chunk_bwd_kernel(
     dke = dke_ref[0, 0, 0, :, :].astype(jnp.float32)
     ddecay = ddecay_ref[0, 0, 0, 0, :].astype(jnp.float32)
 
+    if fuse_prologue:
+        scale_val = scale if scale is not None else 1.0 / math.sqrt(K)
+        rq = jax.lax.rsqrt(jnp.sum(q_c * q_c, axis=-1, keepdims=True) + 1e-6)
+        rk = jax.lax.rsqrt(jnp.sum(k_c * k_c, axis=-1, keepdims=True) + 1e-6)
+        q_act = (q_c * rq) * scale_val
+        k_act = k_c * rk
+        g_act = -jnp.exp(jnp.minimum(g_c, 5.0))
+        b_act = jax.nn.sigmoid(b_c)
+        w_act = jax.nn.sigmoid(w_c)
+    else:
+        q_act = q_c
+        k_act = k_c
+        g_act = g_c
+        b_act = b_c
+        w_act = w_c
+
     dq, dk, dv, dg, db, dw = _single_chunk_prepass_bwd_analytical(
-        q_c, k_c, v_c, g_c, b_c, w_c, seg_c,
+        q_act, k_act, v_c, g_act, b_act, w_act, seg_c,
         dW, dU, dM, dqe, dke, ddecay,
         chunk_size=chunk_size, BC=BC, prec=prec,
         T=T_saved,
     )
+
+    if fuse_prologue:
+        du_g = jnp.where(g_c <= 5.0, dg * g_act, 0.0)
+        du_b = db * (b_act * (1.0 - b_act))
+        du_w = dw * (w_act * (1.0 - w_act))
+
+        q_norm = q_c * rq
+        dq_norm = dq * scale_val
+        ydy_q = jnp.sum(q_norm * dq_norm, axis=-1, keepdims=True)
+        dq_raw = rq * (dq_norm - q_norm * ydy_q)
+
+        k_norm = k_c * rk
+        ydy_k = jnp.sum(k_norm * dk, axis=-1, keepdims=True)
+        dk_raw = rk * (dk - k_norm * ydy_k)
+
+        dq, dk, dg, db, dw = dq_raw, dk_raw, du_g, du_b, du_w
 
     dq_out_ref[0, :, :] = dq.astype(dq_out_ref.dtype)
     dk_out_ref[0, :, :] = dk.astype(dk_out_ref.dtype)
@@ -734,11 +786,25 @@ def _single_chunk_forward(carry, args, chunk_size: int, prec):
     return (S_next, last_segs), (all_S, O_chunks)
 
 
-def _run_scan_gdn2_forward(q, k, v, g, b, w, seg_ids, chunk_size: int, precision: str = "bf16", initial_state=None):
+def _run_scan_gdn2_forward(
+    q, k, v, g, b, w, seg_ids, chunk_size: int, precision: str = "bf16",
+    initial_state=None, fuse_prologue: bool = False,
+    scale: float | None = None,
+):
     B, L, Hv, K = q.shape
     V = v.shape[-1]
     num_chunks = L // chunk_size
     prec = _get_matmul_precision(precision)
+
+    if fuse_prologue:
+        scale_val = scale if scale is not None else 1.0 / math.sqrt(K)
+        rq = jax.lax.rsqrt(jnp.sum(q * q, axis=-1, keepdims=True) + 1e-6)
+        rk = jax.lax.rsqrt(jnp.sum(k * k, axis=-1, keepdims=True) + 1e-6)
+        q = (q * rq) * scale_val
+        k = k * rk
+        g = -jnp.exp(jnp.minimum(g, 5.0))
+        b = jax.nn.sigmoid(b)
+        w = jax.nn.sigmoid(w)
 
     qc = q.reshape(B, num_chunks, chunk_size, Hv, K).transpose(1, 0, 3, 2, 4)
     kc = k.reshape(B, num_chunks, chunk_size, Hv, K).transpose(1, 0, 3, 2, 4)
@@ -771,18 +837,38 @@ def _run_scan_gdn2_forward(q, k, v, g, b, w, seg_ids, chunk_size: int, precision
     return out, all_S, final_S
 
 
-def _run_scan_backward(q, k, v, g, b, w, seg_ids, do, chunk_size: int, precision: str = "bf16", initial_state=None, d_final_state=None):
+def _run_scan_backward(
+    q, k, v, g, b, w, seg_ids, do, chunk_size: int, precision: str = "bf16",
+    initial_state=None, d_final_state=None, fuse_prologue: bool = False,
+    scale: float | None = None,
+):
     B, L, Hv, K = q.shape
     V = v.shape[-1]
     num_chunks = L // chunk_size
     prec = _get_matmul_precision(precision)
 
-    qc = q.reshape(B, num_chunks, chunk_size, Hv, K).transpose(1, 0, 3, 2, 4)
-    kc = k.reshape(B, num_chunks, chunk_size, Hv, K).transpose(1, 0, 3, 2, 4)
-    gc = g.reshape(B, num_chunks, chunk_size, Hv, K).transpose(1, 0, 3, 2, 4)
-    bc = b.reshape(B, num_chunks, chunk_size, Hv, K).transpose(1, 0, 3, 2, 4)
+    if fuse_prologue:
+        scale_val = scale if scale is not None else 1.0 / math.sqrt(K)
+        rq = jax.lax.rsqrt(jnp.sum(q * q, axis=-1, keepdims=True) + 1e-6)
+        rk = jax.lax.rsqrt(jnp.sum(k * k, axis=-1, keepdims=True) + 1e-6)
+        q_act = (q * rq) * scale_val
+        k_act = k * rk
+        g_act = -jnp.exp(jnp.minimum(g, 5.0))
+        b_act = jax.nn.sigmoid(b)
+        w_act = jax.nn.sigmoid(w)
+    else:
+        q_act = q
+        k_act = k
+        g_act = g
+        b_act = b
+        w_act = w
+
+    qc = q_act.reshape(B, num_chunks, chunk_size, Hv, K).transpose(1, 0, 3, 2, 4)
+    kc = k_act.reshape(B, num_chunks, chunk_size, Hv, K).transpose(1, 0, 3, 2, 4)
+    gc = g_act.reshape(B, num_chunks, chunk_size, Hv, K).transpose(1, 0, 3, 2, 4)
+    bc = b_act.reshape(B, num_chunks, chunk_size, Hv, K).transpose(1, 0, 3, 2, 4)
     vc = v.reshape(B, num_chunks, chunk_size, Hv, V).transpose(1, 0, 3, 2, 4)
-    wc = w.reshape(B, num_chunks, chunk_size, Hv, V).transpose(1, 0, 3, 2, 4)
+    wc = w_act.reshape(B, num_chunks, chunk_size, Hv, V).transpose(1, 0, 3, 2, 4)
     if seg_ids is None:
         seg_ids = jnp.zeros((B, L), dtype=jnp.int32)
     elif seg_ids.ndim == 1:
@@ -851,6 +937,22 @@ def _run_scan_backward(q, k, v, g, b, w, seg_ids, do, chunk_size: int, precision
     dw = jnp.flip(rev_dw, axis=0).transpose(1, 0, 3, 2, 4).reshape(B, L, Hv, V)
     d_init = final_dH if initial_state is not None else None
 
+    if fuse_prologue:
+        du_g = jnp.where(g <= 5.0, dg * g_act, 0.0)
+        du_b = db * (b_act * (1.0 - b_act))
+        du_w = dw * (w_act * (1.0 - w_act))
+
+        q_norm = q * rq
+        dq_norm = dq * scale_val
+        ydy_q = jnp.sum(q_norm * dq_norm, axis=-1, keepdims=True)
+        dq_raw = rq * (dq_norm - q_norm * ydy_q)
+
+        k_norm = k * rk
+        ydy_k = jnp.sum(k_norm * dk, axis=-1, keepdims=True)
+        dk_raw = rk * (dk - k_norm * ydy_k)
+
+        return (dq_raw, dk_raw, dv, du_g, du_b, du_w, None, d_init)
+
     return (dq, dk, dv, dg, db, dw, None, d_init)
 
 
@@ -858,6 +960,8 @@ def _chunked_recurrence_fwd(
     q, k, v, g, b, w, seg_ids, init_state,
     *, chunk_size: int, precision: str = "bf16", has_init_state: bool = False,
     fallback_scan: bool = False, is_inference: bool = False,
+    fuse_prologue: bool = False,
+    scale: float | None = None,
 ):
     B, L, Hv, K = q.shape
     V = v.shape[-1]
@@ -870,7 +974,9 @@ def _chunked_recurrence_fwd(
 
     if fallback_scan:
         out, all_states, final_state = _run_scan_gdn2_forward(
-            q, k, v, g, b, w, seg_ids, chunk_size, precision=precision, initial_state=init_state
+            q, k, v, g, b, w, seg_ids, chunk_size, precision=precision, initial_state=init_state,
+            fuse_prologue=fuse_prologue,
+            scale=scale,
         )
         if is_inference:
             return (out, final_state)
@@ -924,7 +1030,12 @@ def _chunked_recurrence_fwd(
     segs_padded = segs_padded.at[:, 0, :, :, 0].set(segs_3d)
 
     prepass_outs = pl.pallas_call(
-        functools.partial(_prepass_chunk_fwd_kernel, chunk_size=chunk_size, BC=BC, NS=chunk_size // BC, K=K, V=V, prec=prec),
+        functools.partial(
+            _prepass_chunk_fwd_kernel,
+            chunk_size=chunk_size, BC=BC, NS=chunk_size // BC, K=K, V=V, prec=prec,
+            fuse_prologue=fuse_prologue,
+            scale=scale,
+        ),
         out_shape=out_shapes_pre,
         grid_spec=pltpu.PrefetchScalarGridSpec(num_scalar_prefetch=0, grid=grid_pre, in_specs=in_specs_pre, out_specs=out_specs_pre),
         compiler_params=pltpu.CompilerParams(dimension_semantics=("parallel", "parallel", "parallel"), disable_bounds_checks=True),
@@ -1047,6 +1158,8 @@ def _get_inference_custom_vjp(
     fallback_scan: bool = False,
     with_final_state: bool = False,
     has_init_state: bool = False,
+    fuse_prologue: bool = False,
+    scale: float | None = None,
 ):
     @jax.custom_vjp
     def op(q, k, v, g, b, w, seg_ids, init_state):
@@ -1054,6 +1167,8 @@ def _get_inference_custom_vjp(
             q, k, v, g, b, w, seg_ids, init_state,
             chunk_size=chunk_size, precision=precision, has_init_state=has_init_state,
             fallback_scan=fallback_scan, is_inference=True,
+            fuse_prologue=fuse_prologue,
+            scale=scale,
         )
         if with_final_state:
             return out, final_state
@@ -1064,6 +1179,8 @@ def _get_inference_custom_vjp(
             q, k, v, g, b, w, seg_ids, init_state,
             chunk_size=chunk_size, precision=precision, has_init_state=has_init_state,
             fallback_scan=fallback_scan, is_inference=True,
+            fuse_prologue=fuse_prologue,
+            scale=scale,
         )
         if with_final_state:
             return (out, final_state), None
@@ -1086,13 +1203,17 @@ def _get_chunked_recurrence_custom_vjp(
     fallback_scan: bool = False,
     with_final_state: bool = False,
     has_init_state: bool = False,
+    fuse_prologue: bool = False,
+    scale: float | None = None,
 ):
     @jax.custom_vjp
     def op(q, k, v, g, b, w, seg_ids, init_state):
         out, final_state, _ = _chunked_recurrence_fwd(
             q, k, v, g, b, w, seg_ids, init_state,
             chunk_size=chunk_size, precision=precision, has_init_state=has_init_state,
-            fallback_scan=fallback_scan, is_inference=False
+            fallback_scan=fallback_scan, is_inference=False,
+            fuse_prologue=fuse_prologue,
+            scale=scale,
         )
         if with_final_state:
             return out, final_state
@@ -1102,7 +1223,9 @@ def _get_chunked_recurrence_custom_vjp(
         out, final_state, res = _chunked_recurrence_fwd(
             q, k, v, g, b, w, seg_ids, init_state,
             chunk_size=chunk_size, precision=precision, has_init_state=has_init_state,
-            fallback_scan=fallback_scan, is_inference=False
+            fallback_scan=fallback_scan, is_inference=False,
+            fuse_prologue=fuse_prologue,
+            scale=scale,
         )
         if with_final_state:
             return (out, final_state), res
@@ -1118,7 +1241,9 @@ def _get_chunked_recurrence_custom_vjp(
                 d_final_state = None
             return _run_scan_backward(
                 q, k, v, g, b, w, seg_ids, do, chunk_size=chunk_size, precision=precision,
-                initial_state=init_state, d_final_state=d_final_state
+                initial_state=init_state, d_final_state=d_final_state,
+                fuse_prologue=fuse_prologue,
+                scale=scale,
             )
 
         q, k, v, g, b, w, segs_padded, W, U, M, q_exp_masked, k_to_end_masked, Lambda_end, segs_state_padded, all_states, init_state, T_saved = res
@@ -1244,7 +1369,12 @@ def _get_chunked_recurrence_custom_vjp(
         ]
 
         dq_3d, dk_3d, dv_3d, dg_3d, db_3d, dw_3d = pl.pallas_call(
-            functools.partial(_prepass_chunk_bwd_kernel, chunk_size=chunk_size, BC=BC, K=K, V=V, prec=prec),
+            functools.partial(
+                _prepass_chunk_bwd_kernel,
+                chunk_size=chunk_size, BC=BC, K=K, V=V, prec=prec,
+                fuse_prologue=fuse_prologue,
+                scale=scale,
+            ),
             out_shape=out_shapes_bwd_pre,
             grid_spec=pltpu.PrefetchScalarGridSpec(num_scalar_prefetch=0, grid=grid_pre, in_specs=in_specs_bwd_pre, out_specs=out_specs_bwd_pre),
             compiler_params=pltpu.CompilerParams(dimension_semantics=("parallel", "parallel", "parallel"), disable_bounds_checks=True),
@@ -1284,6 +1414,7 @@ def chunk_gdn2(
     qk_l2norm: bool = False,
     fallback_scan: bool = False,
     is_inference: bool = False,
+    fuse_prologue: bool = False,
 ) -> jax.Array | tuple[jax.Array, jax.Array]:
     """Forward pass of chunked-WY GDN-2 on Google Cloud TPU.
 
@@ -1292,9 +1423,14 @@ def chunk_gdn2(
         k: Key tensor of shape (B, L, Hk, K).
         v: Value tensor of shape (B, L, Hv, V).
         g: Log-decay tensor of shape (B, L, Hk, K), (B, L, Hk, 1), (B, L, Hk), or (B, L, Hv).
-            Values must satisfy g <= 0; positive values are automatically clamped to 0.0.
+            When fuse_prologue=False, values must satisfy g <= 0; positive values are clamped to 0.0.
+            When fuse_prologue=True, g is the pre-activation log decay magnitude: g_act = -exp(min(g, 5.0)).
         b: Erase gate tensor of shape (B, L, Hk, K), (B, L, Hk, 1), (B, L, Hk), or (B, L, Hv).
+            When fuse_prologue=False, b is the activated erase gate in [0, 1].
+            When fuse_prologue=True, b is the erase gate logit: b_act = sigmoid(b).
         w: Write gate tensor of shape (B, L, Hv, V), (B, L, Hv, 1), or (B, L, Hv).
+            When fuse_prologue=False, w is the activated write gate in [0, 1].
+            When fuse_prologue=True, w is the write gate logit: w_act = sigmoid(w).
         segment_ids: Document/segment IDs of shape (B, L) or (L,). Preferred for jax.jit.
         cu_seqlens: Cumulative sequence lengths for document boundaries (static list/tuple or 1D array).
         initial_state: Optional initial state tensor of shape (B, Hv, K, V).
@@ -1305,11 +1441,19 @@ def chunk_gdn2(
         qk_l2norm: Whether to apply in-kernel L2 norm to query and key. Defaults to False.
         fallback_scan: Use pure-JAX chunked scan fallback instead of Pallas. Defaults to False.
         is_inference: Run in forward-only inference mode without stashing backward residuals. Defaults to False.
+        fuse_prologue: Fuse decay exponentiation (-exp(min(g, 5.0))), gate sigmoids (sigmoid(b), sigmoid(w)),
+            and q/k L2-normalization directly into the Pallas VMEM prepass kernel.
+            Requires qk_l2norm=True. Defaults to False.
 
     Returns:
         Output tensor of shape (B, L, Hv, V), or tuple of (output, final_state)
         where final_state has shape (B, Hv, K, V).
     """
+    if fuse_prologue and not qk_l2norm:
+        raise ValueError(
+            "fuse_prologue=True requires qk_l2norm=True because L2-normalization is fused directly into the VMEM kernel prologue."
+        )
+
     if precision is None or not isinstance(precision, str):
         raise ValueError(f"precision must be a string ('bf16' or 'fp32'), got {precision!r}.")
     precision_clean = precision.lower()
@@ -1415,7 +1559,10 @@ def chunk_gdn2(
     q = q.astype(jnp.float32)
     k = k.astype(jnp.float32)
     v = v.astype(jnp.float32)
-    g = _nonpositive_gate(g.astype(jnp.float32))
+    if not fuse_prologue:
+        g = _nonpositive_gate(g.astype(jnp.float32))
+    else:
+        g = g.astype(jnp.float32)
     b = b.astype(jnp.float32)
     w = w.astype(jnp.float32)
     if initial_state is not None:
@@ -1439,6 +1586,17 @@ def chunk_gdn2(
     G = Hv // Hk
     if scale is None:
         scale = 1.0 / math.sqrt(K)
+    else:
+        if isinstance(scale, jax.core.Tracer):
+            raise ValueError(
+                "chunk_gdn2: scale must be a concrete Python float or scalar, not a JAX tracer."
+            )
+        try:
+            scale = float(scale)
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"chunk_gdn2: scale must be convertible to a concrete float, got {type(scale)}: {e}"
+            )
 
     # Expand scalar gates/decays or broadcast single-head gates across heads
     if g.ndim == 3:
@@ -1528,21 +1686,30 @@ def chunk_gdn2(
         q = jnp.pad(q, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
         k = jnp.pad(k, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
         v = jnp.pad(v, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
-        g = jnp.pad(g, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
-        b = jnp.pad(b, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
-        w = jnp.pad(w, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
+        if fuse_prologue:
+            g = jnp.pad(g, ((0, 0), (0, pad_len), (0, 0), (0, 0)), constant_values=-64.0)
+            b = jnp.pad(b, ((0, 0), (0, pad_len), (0, 0), (0, 0)), constant_values=-64.0)
+            w = jnp.pad(w, ((0, 0), (0, pad_len), (0, 0), (0, 0)), constant_values=-64.0)
+        else:
+            g = jnp.pad(g, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
+            b = jnp.pad(b, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
+            w = jnp.pad(w, ((0, 0), (0, pad_len), (0, 0), (0, 0)))
         seg_ids = jnp.pad(seg_ids, ((0, 0), (0, pad_len)), mode="edge")
         L = L + pad_len
 
     # In-kernel L2 norm
-    if qk_l2norm:
-        q_eps = jnp.array(1e-6, dtype=q.dtype)
-        k_eps = jnp.array(1e-6, dtype=k.dtype)
-        scale_val = jnp.array(scale, dtype=q.dtype)
-        q_norm = (q / jnp.sqrt(jnp.sum(q ** 2, axis=-1, keepdims=True) + q_eps)) * scale_val
-        k_norm = k / jnp.sqrt(jnp.sum(k ** 2, axis=-1, keepdims=True) + k_eps)
+    if not fuse_prologue:
+        if qk_l2norm:
+            q_eps = jnp.array(1e-6, dtype=q.dtype)
+            k_eps = jnp.array(1e-6, dtype=k.dtype)
+            scale_val = jnp.array(scale, dtype=q.dtype)
+            q_norm = (q / jnp.sqrt(jnp.sum(q ** 2, axis=-1, keepdims=True) + q_eps)) * scale_val
+            k_norm = k / jnp.sqrt(jnp.sum(k ** 2, axis=-1, keepdims=True) + k_eps)
+        else:
+            q_norm = q * jnp.array(scale, dtype=q.dtype)
+            k_norm = k
     else:
-        q_norm = q * jnp.array(scale, dtype=q.dtype)
+        q_norm = q
         k_norm = k
 
     has_init = (initial_state is not None)
@@ -1554,6 +1721,8 @@ def chunk_gdn2(
             fallback_scan=fallback_scan,
             with_final_state=output_final_state,
             has_init_state=has_init,
+            fuse_prologue=fuse_prologue,
+            scale=scale,
         )
         if G > 1:
             v_fused = v.reshape(B, L, Hk, G * V)
@@ -1589,6 +1758,8 @@ def chunk_gdn2(
         fallback_scan=fallback_scan,
         with_final_state=output_final_state,
         has_init_state=has_init,
+        fuse_prologue=fuse_prologue,
+        scale=scale,
     )
 
     if G > 1:
@@ -1633,6 +1804,7 @@ def gdn2_decode_step(
     reset: bool | jax.Array | None = None,
     scale: float | None = None,
     qk_l2norm: bool = False,
+    state_dtype: str | jnp.dtype | None = None,
 ) -> tuple[jax.Array, jax.Array]:
     """Single token decode step for GDN-2 in vectorized JAX.
 
@@ -1652,11 +1824,13 @@ def gdn2_decode_step(
             When True for batch element b, the state is cleared before the step.
         scale: Query scaling factor. Defaults to 1.0 / sqrt(K).
         qk_l2norm: Whether to apply L2 normalization to query and key. Defaults to False.
+        state_dtype: Target dtype for output state (e.g. bfloat16 or float32). Defaults to float32.
+            Note: bf16 state validated for channel-wise GDN-2 only; scalar-decay decode not validated.
 
     Returns:
         tuple of (output, new_state) where:
             output has shape (B, Hv, V) or (B, 1, Hv, V) matching query dimension.
-            new_state has shape (B, Hv, K, V).
+            new_state has shape (B, Hv, K, V) in state_dtype (float32 by default).
     """
     out_dtype = v.dtype
     orig_ndim = q.ndim
@@ -1701,6 +1875,11 @@ def gdn2_decode_step(
 
     if state.shape != (B, Hv, K, V):
         raise ValueError(f"state shape {state.shape} must match ({B}, {Hv}, {K}, {V}).")
+
+    if state_dtype is not None:
+        target_state_dtype = jnp.dtype(state_dtype)
+    else:
+        target_state_dtype = jnp.float32
 
     if g.ndim not in (2, 3) or g.shape[0] != B or g.shape[1] not in (1, Hk, Hv) or (g.ndim == 3 and g.shape[2] not in (1, K)):
         raise ValueError(f"g shape {g.shape} invalid for batch={B}, Hk={Hk}, Hv={Hv}, K={K}.")
@@ -1797,4 +1976,5 @@ def gdn2_decode_step(
     if orig_ndim == 4:
         o = o[:, None, :, :]
 
+    S_next = S_next.astype(target_state_dtype)
     return o, S_next

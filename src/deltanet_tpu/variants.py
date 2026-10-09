@@ -31,6 +31,7 @@ def chunk_gdn(
     qk_l2norm: bool = False,
     fallback_scan: bool = False,
     is_inference: bool = False,
+    fuse_prologue: bool = False,
 ) -> jax.Array | tuple[jax.Array, jax.Array]:
     """Gated DeltaNet forward pass on Google Cloud TPU.
 
@@ -41,8 +42,11 @@ def chunk_gdn(
         k: Key tensor of shape (B, L, Hk, K).
         v: Value tensor of shape (B, L, Hv, V).
         g: Scalar log-decay tensor of shape (B, L, Hk), (B, L, Hk, 1), (B, L, Hv), or (B, L, Hv, 1).
-            Values must satisfy g <= 0; positive values are automatically clamped to 0.0.
+            When fuse_prologue=False, values must satisfy g <= 0; positive values are automatically clamped to 0.0.
+            When fuse_prologue=True, g is the pre-activation log decay magnitude: g_act = -exp(min(g, 5.0)).
         beta: Shared gate tensor of shape (B, L, Hk), (B, L, Hv), (B, L, Hk, 1), or (B, L, Hv, 1).
+            When fuse_prologue=False, beta is the activated gate in [0, 1].
+            When fuse_prologue=True, beta is the gate logit: beta_act = sigmoid(beta).
         segment_ids: Document/segment IDs of shape (B, L) or (L,).
         cu_seqlens: Cumulative sequence lengths for document boundaries.
         initial_state: Optional initial state tensor of shape (B, Hv, K, V).
@@ -53,6 +57,8 @@ def chunk_gdn(
         qk_l2norm: Whether to apply in-kernel L2 norm to query and key. Defaults to False.
         fallback_scan: Use pure-JAX chunked scan fallback instead of Pallas. Defaults to False.
         is_inference: Run in forward-only inference mode without saving backward residuals. Defaults to False.
+        fuse_prologue: Fuse decay exponentiation (-exp(min(g, 5.0))), gate sigmoid (sigmoid(beta)),
+            and q/k L2-normalization into VMEM prologue. Requires qk_l2norm=True. Defaults to False.
 
     Returns:
         Output tensor of shape (B, L, Hv, V), or tuple of (output, final_state).
@@ -74,6 +80,7 @@ def chunk_gdn(
         qk_l2norm=qk_l2norm,
         fallback_scan=fallback_scan,
         is_inference=is_inference,
+        fuse_prologue=fuse_prologue,
     )
 
 
@@ -94,6 +101,7 @@ def chunk_kda(
     qk_l2norm: bool = False,
     fallback_scan: bool = False,
     is_inference: bool = False,
+    fuse_prologue: bool = False,
 ) -> jax.Array | tuple[jax.Array, jax.Array]:
     """Kimi Delta Attention (KDA) forward pass on Google Cloud TPU.
 
@@ -104,7 +112,11 @@ def chunk_kda(
         k: Key tensor of shape (B, L, Hk, K).
         v: Value tensor of shape (B, L, Hv, V).
         g: Channel-wise log-decay tensor of shape (B, L, Hk, K).
+            When fuse_prologue=False, values must satisfy g <= 0; positive values are automatically clamped to 0.0.
+            When fuse_prologue=True, g is the pre-activation log decay magnitude: g_act = -exp(min(g, 5.0)).
         beta: Shared gate tensor of shape (B, L, Hk), (B, L, Hv), (B, L, Hk, 1), or (B, L, Hv, 1).
+            When fuse_prologue=False, beta is the activated gate in [0, 1].
+            When fuse_prologue=True, beta is the gate logit: beta_act = sigmoid(beta).
         segment_ids: Document/segment IDs of shape (B, L) or (L,).
         cu_seqlens: Cumulative sequence lengths for document boundaries.
         initial_state: Optional initial state tensor of shape (B, Hv, K, V).
@@ -115,6 +127,8 @@ def chunk_kda(
         qk_l2norm: Whether to apply in-kernel L2 norm to query and key. Defaults to False.
         fallback_scan: Use pure-JAX chunked scan fallback instead of Pallas. Defaults to False.
         is_inference: Run in forward-only inference mode without saving backward residuals. Defaults to False.
+        fuse_prologue: Fuse decay exponentiation (-exp(min(g, 5.0))), gate sigmoid (sigmoid(beta)),
+            and q/k L2-normalization into VMEM prologue. Requires qk_l2norm=True. Defaults to False.
 
     Returns:
         Output tensor of shape (B, L, Hv, V), or tuple of (output, final_state).
@@ -136,6 +150,7 @@ def chunk_kda(
         qk_l2norm=qk_l2norm,
         fallback_scan=fallback_scan,
         is_inference=is_inference,
+        fuse_prologue=fuse_prologue,
     )
 
 
@@ -288,14 +303,20 @@ def gdn_decode_step(
     reset: bool | jax.Array | None = None,
     scale: float | None = None,
     qk_l2norm: bool = False,
+    state_dtype: str | jnp.dtype | None = None,
 ) -> tuple[jax.Array, jax.Array]:
-    """Single token decode step for Gated DeltaNet (GDN) in vectorized JAX."""
+    """Single token decode step for Gated DeltaNet (GDN) in vectorized JAX.
+
+    Note: bf16 state validated for channel-wise GDN-2 only; scalar-decay decode not validated.
+    state_dtype defaults to float32.
+    """
     beta = _validate_decode_beta(beta)
     return gdn2_decode_step(
         q, k, v, g, beta, beta, state,
         reset=reset,
         scale=scale,
         qk_l2norm=qk_l2norm,
+        state_dtype=state_dtype,
     )
 
 
@@ -310,14 +331,20 @@ def kda_decode_step(
     reset: bool | jax.Array | None = None,
     scale: float | None = None,
     qk_l2norm: bool = False,
+    state_dtype: str | jnp.dtype | None = None,
 ) -> tuple[jax.Array, jax.Array]:
-    """Single token decode step for Kimi Delta Attention (KDA) in vectorized JAX."""
+    """Single token decode step for Kimi Delta Attention (KDA) in vectorized JAX.
+
+    Note: bf16 state validated for channel-wise GDN-2 only; scalar-decay decode not validated.
+    state_dtype defaults to float32.
+    """
     beta = _validate_decode_beta(beta)
     return gdn2_decode_step(
         q, k, v, g, beta, beta, state,
         reset=reset,
         scale=scale,
         qk_l2norm=qk_l2norm,
+        state_dtype=state_dtype,
     )
 
 
@@ -331,8 +358,13 @@ def gla_decode_step(
     reset: bool | jax.Array | None = None,
     scale: float | None = None,
     qk_l2norm: bool = False,
+    state_dtype: str | jnp.dtype | None = None,
 ) -> tuple[jax.Array, jax.Array]:
-    """Single token decode step for Gated Linear Attention (GLA) in vectorized JAX."""
+    """Single token decode step for Gated Linear Attention (GLA) in vectorized JAX.
+
+    Note: bf16 state validated for channel-wise GDN-2 only; scalar-decay decode not validated.
+    state_dtype defaults to float32.
+    """
     b = jnp.zeros_like(k)
     w = jnp.ones_like(v)
     return gdn2_decode_step(
@@ -340,6 +372,7 @@ def gla_decode_step(
         reset=reset,
         scale=scale,
         qk_l2norm=qk_l2norm,
+        state_dtype=state_dtype,
     )
 
 
@@ -353,8 +386,13 @@ def delta_rule_decode_step(
     reset: bool | jax.Array | None = None,
     scale: float | None = None,
     qk_l2norm: bool = False,
+    state_dtype: str | jnp.dtype | None = None,
 ) -> tuple[jax.Array, jax.Array]:
-    """Single token decode step for DeltaNet (no decay) in vectorized JAX."""
+    """Single token decode step for DeltaNet (no decay) in vectorized JAX.
+
+    Note: bf16 state validated for channel-wise GDN-2 only; scalar-decay decode not validated.
+    state_dtype defaults to float32.
+    """
     beta = _validate_decode_beta(beta)
     g = jnp.zeros_like(k)
     return gdn2_decode_step(
@@ -362,4 +400,5 @@ def delta_rule_decode_step(
         reset=reset,
         scale=scale,
         qk_l2norm=qk_l2norm,
+        state_dtype=state_dtype,
     )
