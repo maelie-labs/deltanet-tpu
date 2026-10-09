@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "deltanet-tpu: Pallas TPU Kernels for Training and Inference of Gated DeltaNet and Delta-Rule Linear Attention in JAX"
+version: 0.1.0
+date-released: 2026-10-08
+url: "https://github.com/maelie-labs/deltanet-tpu"
+repository-code: "https://github.com/maelie-labs/deltanet-tpu"
+abstract: "Pallas TPU kernels for training and inference of Gated DeltaNet, GDN-2, KDA and delta-rule linear attention layers in JAX."
+keywords:
+  - "jax"
+  - "pallas"
+  - "tpu"
+  - "tpu-v6e"
+  - "trillium"
+  - "gated-deltanet"
+  - "deltanet"
+  - "delta-rule"
+  - "linear-attention"
+  - "kimi-delta-attention"
+  - "qwen3.5"
+  - "qwen3-next"
+  - "kimi-linear"
+  - "llm-training"
+  - "llm-inference"
+  - "kernels"
+authors:
+  - name: "maelie-labs"
+license: Apache-2.0

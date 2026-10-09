@@ -1,0 +1,9 @@
+deltanet-tpu
+Copyright 2026 maelie-labs
+
+This product includes software developed at maelie-labs (https://github.com/maelie-labs).
+
+This project incorporates reference algorithms and recurrence mathematics from:
+- fla-org/flash-linear-attention (MIT, Songlin Yang, Yu Zhang, Zhiyuan Li)
+  Chunked WY representation algorithm for gated delta rules and recurrence reference implementations (release v0.5.2).
+  See LICENSES/flash-linear-attention-MIT.txt for license terms.

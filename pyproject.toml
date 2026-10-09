@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deltanet-tpu"
+dynamic = ["version"]
+description = "Pallas TPU kernels for training and inference of Gated DeltaNet, GDN-2, Kimi Delta Attention and other delta-rule linear attention layers in JAX"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "LICENSES/*"]
+requires-python = ">=3.12"
+authors = [
+    { name = "maelie-labs" }
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = [
+    "jax",
+    "pallas",
+    "tpu",
+    "tpu-v6e",
+    "trillium",
+    "google-cloud-tpu",
+    "gated-deltanet",
+    "gdn",
+    "gdn2",
+    "gdn-2",
+    "deltanet",
+    "delta-rule",
+    "linear-attention",
+    "gla",
+    "gated-linear-attention",
+    "kimi-delta-attention",
+    "kimi-linear",
+    "flash-linear-attention",
+    "llm-training",
+    "llm-inference",
+    "qwen3.5",
+    "qwen3-next",
+    "kernels",
+]
+dependencies = [
+    "jax>=0.11.2,<0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "numpy>=1.26",
+]
+tpu = [
+    "jax[tpu]>=0.11.2,<0.12",
+]
+examples = [
+    "torch>=2.0",
+    "transformers>=5.19",
+    "accelerate",
+]
+
+[project.urls]
+Homepage = "https://github.com/maelie-labs/deltanet-tpu"
+Repository = "https://github.com/maelie-labs/deltanet-tpu"
+Issues = "https://github.com/maelie-labs/deltanet-tpu/issues"
+
+[tool.hatch.version]
+path = "src/deltanet_tpu/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deltanet_tpu"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

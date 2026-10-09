@@ -1,0 +1,96 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run test suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev]
+
+      - name: Run tests under Pallas interpret mode
+        env:
+          PALLAS_INTERPRET: "1"
+        run: |
+          pytest -v tests/ --ignore=tests/test_matrix.py
+          pytest -v tests/test_matrix.py -k "not test_matrix_decode"
+          pytest -v tests/test_matrix.py -k "test_matrix_decode"
+
+  build:
+    name: Build distribution archives
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify release tag matches package version
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+          PKG_VER=$(python -c "import deltanet_tpu; print(deltanet_tpu.__version__)")
+          TAG_VER=${GITHUB_REF#refs/tags/v}
+          if [ "$PKG_VER" != "$TAG_VER" ]; then
+            echo "Version mismatch: package version ($PKG_VER) != git tag ($TAG_VER)"
+            exit 1
+          fi
+          echo "Tag $TAG_VER matches package version $PKG_VER."
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Verify distribution archives
+        run: twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2

@@ -1,0 +1,16 @@
+Loading Qwen3.5 layer from Qwen/Qwen3.5-2B...
+Loaded layer 0 (Hk=16, Hv=16, K=128, V=128)
+Prefill (L=128) Output Rel L2 Error:      3.5598e-07
+Prefill (L=128) Final State Rel L2 Error: 3.3863e-07
+Decode Step Output Rel L2 Error:          1.6579e-07
+Decode Step Final State Rel L2 Error:     1.1672e-07
+SUCCESS: JAX deltanet_tpu and PyTorch Qwen3.5 linear attention match to within tolerance.
+Saved parity results to benchmarks/results/qwen3_5_parity_results.json
+Loading Qwen3.5 layer from Qwen/Qwen3.5-4B...
+Loaded layer 0 (Hk=16, Hv=32, K=128, V=128)
+Prefill (L=128) Output Rel L2 Error:      4.1710e-07
+Prefill (L=128) Final State Rel L2 Error: 4.6905e-07
+Decode Step Output Rel L2 Error:          2.2053e-07
+Decode Step Final State Rel L2 Error:     1.1211e-07
+SUCCESS: JAX deltanet_tpu and PyTorch Qwen3.5 linear attention match to within tolerance.
+Saved parity results to benchmarks/results/qwen3_5_4b_parity_results.json

@@ -1,0 +1,27 @@
+{
+  "model": "Qwen/Qwen3.5-2B",
+  "layer_idx": 0,
+  "device": "cpu:0",
+  "backend": "cpu",
+  "tree_hash": "5d5c05bd730d4c8e8736e911f204ef43202f1ec5",
+  "transformers_version": "5.19.0",
+  "torch_version": "2.14.1+cu130",
+  "jax_version": "0.11.2",
+  "precision": "fp32",
+  "shapes": {
+    "Hk": 16,
+    "Hv": 16,
+    "K": 128,
+    "V": 128
+  },
+  "prefill": {
+    "seq_len": 128,
+    "output_rel_l2": 3.559772210337542e-07,
+    "final_state_rel_l2": 3.3863437920444994e-07
+  },
+  "decode": {
+    "steps": 1,
+    "output_rel_l2": 1.6579090811319475e-07,
+    "final_state_rel_l2": 1.16722809195835e-07
+  }
+}
