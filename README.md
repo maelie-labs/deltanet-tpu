@@ -139,7 +139,7 @@ Kernel outputs and gradients are verified against a token-serial reference (`ref
 - State continuity: passing recurrent state between split chunks matches single-call execution.
 - Sharding: numerical outputs match within 1e-5 under `jax.shard_map` across batch and head partitions on a 1-device mesh.
 - Inference: split prefill chunks match single-call execution; N decode steps match chunked execution with document resets.
-- Hardware test suite: 318 unit and matrix tests pass on physical Google Cloud TPU v6e (Trillium) and TPU v5e hardware; raw logs available in `benchmarks/results/tpu_v6e_test_0.2.0.log` and `benchmarks/results/tpu_v5e_test_0.2.0.log`.
+- Hardware test suite: 341 tests pass on TPU v6e (0.2.1); 0.2.0 also passed on TPU v5e. Raw logs: `benchmarks/results/tpu_v6e_test_0.2.1.log`, `benchmarks/results/tpu_v6e_test_0.2.0.log`, and `benchmarks/results/tpu_v5e_test_0.2.0.log`.
 
 ## Benchmarks
 

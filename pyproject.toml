@@ -77,6 +77,22 @@ path = "src/deltanet_tpu/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/deltanet_tpu"]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/NOTICE",
+    "/LICENSES",
+    "/CITATION.cff",
+    "/pyproject.toml",
+]
+exclude = [
+    "/tests/data/*.npz",
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

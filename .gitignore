@@ -60,3 +60,6 @@ cover/
 
 # Lockfiles
 uv.lock
+
+# Test data artifacts (private development only)
+tests/data/*.npz

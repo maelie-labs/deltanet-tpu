@@ -5,6 +5,16 @@ All notable changes to `deltanet-tpu` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-11
+
+### Fixed
+- Intra-chunk triangular inverse numerical stability: reduced diagonal block size from B=32 to B=16 in `_invert_unit_triangular_core` (`src/deltanet_tpu/gdn2.py`). For B=32, synthetic adversarial inputs with identical or highly aligned keys within a chunk, decay ≈ 1, and β → 1 caused polynomial doubling expansions to reach binomial coefficients C(31, 15) = 300,540,195, exceeding float32's 24-bit significand (16,777,216) and producing a residual ||I - LT||_2 ~ 4,096 that caused Newton-Schulz refinement to diverge. For B=16, the maximum binomial coefficient is C(15, 7) = 6,435, preserving 11.3 bits of headroom, converging smoothly inside the Newton-Schulz quadratic contraction basin. While not observed on the real-model activations we tested, users of 0.2.0 should upgrade to 0.2.1.
+
+### Added
+- Adversarial test suite in `tests/test_nan_adversarial.py` covering synthetic identical keys, near-identical perturbations, periodic patterns, opposite-sign keys, and direct triangular solve parity.
+- Evaluated and verified strict contractive boundedness (|T_ij| <= 1.0) under exact ±1 rank-1 patterns in `tests/test_nan_adversarial.py`.
+- Inverter guard in `_invert_unit_triangular_core` that raises ValueError if C > 8 * B (internal; the public API fixes chunk_size at 128).
+
 ## [0.2.0] - 2026-10-09
 
 ### Added
