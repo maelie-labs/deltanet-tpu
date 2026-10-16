@@ -5,6 +5,28 @@ All notable changes to `deltanet-tpu` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-16
+
+### Added
+- `recompute_states=True` on `chunk_gdn2` and the chunked variants: the backward pass recomputes the chunk states (and the intra-chunk prepass) instead of saving them, for long sequences. Slower, but needs less memory for saved residuals.
+- `streaming_prefill=True` (with `prefill_block_size`) for forward-only prefill (`is_inference=True`; ignored otherwise): the sequence is processed in blocks with the state passed between them, so intermediate buffers are bounded by the block size.
+- `stability_guard` and `stability_tau` on `chunk_gdn2` and `gdn2_decode_step`, off by default. They clamp the erase gate to `b >= 0` and the log-decay to `g <= -1e-6` in every mode (with `fuse_prologue=True` only the activated decay is clamped, with zero gradient where it clamps). They also cap the Frobenius norm at `stability_tau` of the state returned by a forward-only `chunk_gdn2` call, of the state passed between streaming-prefill blocks, and of the `new_state` returned by `gdn2_decode_step`. The state inside one call and the training path are not capped.
+- `initial_state_segment_id` on `chunk_gdn2`: the segment ID of the token that produced `initial_state`. If token 0 belongs to a different document, the initial state is reset at token 0. Use it when a packed sequence is split across calls or chips.
+- Precision options on `chunk_gdn2`, all off by default: `mask_lambda_by_doc` (restricts the within-chunk cumulative decay to same-document pairs; avoids precision loss in a document that follows a strongly decayed one in the same chunk), `state_fp32_matmul` (full float32 precision for the state recurrence when `precision="bf16"`; slower) and `truncate_bwd_dT_bf16` (restores the bfloat16 rounding of the intra-chunk backward products used before 0.3.0).
+- `DELTANET_NONPOSITIVE_GUARD=0` environment variable, for debugging only. It disables the nonpositive clamps on log-decay (on the input `g` and on cumulative decays and their differences, with their subgradients), but the gradient of the input clamp still masks positive `g`, so forward and backward become inconsistent. It is read when the function is traced.
+- `ValueError` for `stability_tau <= 0` with `stability_guard`, and for `prefill_block_size <= 0` with `streaming_prefill`.
+
+### Fixed
+- `benchmarks/benchmark_public_shapes.py` stopped with a `NameError` in its chip detection before writing results.
+
+### Changed
+- Hardening: inside each 128-token chunk, the sub-block decay factors `exp(Lambda_i - Lambda_ref)` are now computed from exponents clamped to `<= 0` in the forward kernel, the backward kernel and the `fallback_scan` path, and the analytical backward applies matching subgradients. In 0.2.1 these exponents were positive only by float32 rounding, and non-finite results needed log-decay near the float32 limit. The clamp is required by `mask_lambda_by_doc`.
+- With `precision="bf16"`, the Pallas intra-chunk backward keeps its intermediate products in float32 instead of rounding them to bfloat16 (`truncate_bwd_dT_bf16=False`); its matmul operands are bfloat16. On its own this moves bf16 gradients slightly closer to the fp32 reference. Forward outputs are unchanged.
+- `chunk_gdn2` keeps q, k, v and the gates in their input dtype in HBM (the kernels still compute in float32), instead of upcasting them to float32 first. This saves memory but costs accuracy with bfloat16 inputs: the scaled (and, with `qk_l2norm=True`, normalized) q and k are stored in bfloat16, and gradients of broadcast or per-head gates are rounded to bfloat16 before the broadcast sum. In a CPU check (L=256, Hk=2, Hv=4, all inputs bfloat16, scalar gates at `Hv` heads, `qk_l2norm=True`, `precision="fp32"`), the relative error against the float32 reference rose from 1.7e-3 to 2.9e-3 for the output and from 2.2e-3 to 7.6e-3 for `dg`. Pass float32 inputs (or full-channel gates) if this matters.
+- Grouped heads with value-head gates (`Hv > Hk` and `g` or `b` with `Hv` heads) index q and k per key head through the kernel's block mapping instead of copying them to `Hv` heads.
+- `d_initial_state` is computed only when an `initial_state` is given, and the per-chunk segment-ID residual is 128 times smaller (logical size).
+- README benchmark table re-measured with 0.3.0 on TPU v6e (`benchmarks/results/public_shapes_benchmark_0.3.0.json`).
+
 ## [0.2.1] - 2026-10-11
 
 ### Fixed

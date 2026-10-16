@@ -263,6 +263,7 @@ def main():
 
     dev = jax.devices()[0]
     dev_str = str(dev)
+    dev_kind = getattr(dev, "device_kind", "")
     if "v6e" in dev_str.lower() or "trillium" in dev_str.lower() or "v6e" in dev_kind.lower() or "v6 lite" in dev_kind.lower():
         chip = "TPU v6e (Trillium, 1 chip)"
     elif "v5e" in dev_str.lower() or "v5 lite" in dev_kind.lower() or "v5e" in dev_kind.lower():

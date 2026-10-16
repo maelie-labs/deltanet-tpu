@@ -260,3 +260,18 @@ def test_channel_wise_beta_in_variants_raises():
 
     with pytest.raises(ValueError, match="channel-wise beta with shape"):
         chunk_delta_rule(q, k, v, beta_cw)
+
+
+def test_nonpositive_stability_tau_and_block_size_raise():
+    """stability_tau <= 0 with stability_guard, and prefill_block_size <= 0 with streaming_prefill, raise ValueError."""
+    q = jnp.zeros((1, 128, 2, 128), dtype=jnp.float32)
+    v = jnp.zeros((1, 128, 4, 128), dtype=jnp.float32)
+    g = jnp.zeros((1, 128, 2, 128), dtype=jnp.float32)
+    w = jnp.zeros((1, 128, 4, 128), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="stability_tau"):
+        chunk_gdn2(q, q, v, g, g, w, stability_guard=True, stability_tau=-1.0)
+    with pytest.raises(ValueError, match="prefill_block_size"):
+        chunk_gdn2(q, q, v, g, g, w, is_inference=True, streaming_prefill=True, prefill_block_size=0)
+    state = jnp.zeros((1, 4, 128, 128), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="stability_tau"):
+        gdn2_decode_step(q[:, 0], q[:, 0], v[:, 0], g[:, 0], g[:, 0], w[:, 0], state, stability_guard=True, stability_tau=0.0)

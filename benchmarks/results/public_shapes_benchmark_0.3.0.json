@@ -1,0 +1,128 @@
+{
+  "metadata": {
+    "chip": "TPU v6e (Trillium, 1 chip)",
+    "jax_version": "0.11.2",
+    "libtpu_version": "0.0.48.1",
+    "tree_hash": "02b06635530294a2e77a1fac6d2f91d074b2f311",
+    "batch_size": 1,
+    "sequence_length": 8192,
+    "input_dtype": "float32",
+    "precision": "bf16"
+  },
+  "shapes": {
+    "gdn_2_12_key___24_value_heads": {
+      "model_name": "GDN-2 (12 key / 24 value heads)",
+      "variant": "gdn2",
+      "Hk": 12,
+      "Hv": 24,
+      "K": 128,
+      "V": 128,
+      "seq_len": 8192,
+      "forward_ms": 4.849945068359375,
+      "forward_backward_ms": 9.336349487304688,
+      "prefill_ms": 4.771194934844971,
+      "prefill_tokens_per_second": 1716970.300285201,
+      "decode": {
+        "b1": {
+          "pipelined_step_ms": 0.041807600000538514,
+          "step_by_step_ms": 0.18671699999686098,
+          "tokens_per_second": 23919.096049214
+        },
+        "b8": {
+          "pipelined_step_ms": 0.04108549999727984,
+          "step_by_step_ms": 0.2122724999935599,
+          "tokens_per_second": 194715.89734893476
+        }
+      }
+    },
+    "qwen3.5_2b_gdn": {
+      "model_name": "Qwen3.5-2B GDN",
+      "variant": "gdn",
+      "Hk": 16,
+      "Hv": 16,
+      "K": 128,
+      "V": 128,
+      "seq_len": 8192,
+      "forward_ms": 5.634949684143066,
+      "forward_backward_ms": 10.929010391235352,
+      "prefill_ms": 5.614009857177734,
+      "prefill_tokens_per_second": 1459206.557951836,
+      "decode": {
+        "b1": {
+          "pipelined_step_ms": 0.03915060000053927,
+          "step_by_step_ms": 0.19201399998109991,
+          "tokens_per_second": 25542.392708827596
+        },
+        "b8": {
+          "pipelined_step_ms": 0.040195900000981055,
+          "step_by_step_ms": 0.20393999998304935,
+          "tokens_per_second": 199025.27371708918
+        }
+      }
+    },
+    "qwen3.5_4b___qwen3_next_gdn": {
+      "model_name": "Qwen3.5-4B / Qwen3-Next GDN",
+      "variant": "gdn",
+      "Hk": 16,
+      "Hv": 32,
+      "K": 128,
+      "V": 128,
+      "seq_len": 8192,
+      "forward_ms": 11.371315002441406,
+      "forward_backward_ms": 22.51732063293457,
+      "prefill_ms": 11.292430877685547,
+      "prefill_tokens_per_second": 725441.6775920085,
+      "decode": {
+        "b1": {
+          "pipelined_step_ms": 0.039323699998021766,
+          "step_by_step_ms": 0.1963845000091169,
+          "tokens_per_second": 25429.956999222006
+        },
+        "b8": {
+          "pipelined_step_ms": 0.0420797099968695,
+          "step_by_step_ms": 0.2186730000175885,
+          "tokens_per_second": 190115.3786610021
+        }
+      }
+    },
+    "kimi_linear_kda": {
+      "model_name": "Kimi Linear KDA",
+      "variant": "kda",
+      "Hk": 32,
+      "Hv": 32,
+      "K": 128,
+      "V": 128,
+      "seq_len": 8192,
+      "forward_ms": 11.671875,
+      "forward_backward_ms": 22.509376525878906,
+      "prefill_ms": 11.493576049804688,
+      "prefill_tokens_per_second": 712745.9690962943,
+      "decode": {
+        "b1": {
+          "pipelined_step_ms": 0.03921449999779725,
+          "step_by_step_ms": 0.19229649999488174,
+          "tokens_per_second": 25500.771399767225
+        },
+        "b8": {
+          "pipelined_step_ms": 0.04527510000116308,
+          "step_by_step_ms": 0.22299899999325135,
+          "tokens_per_second": 176697.566649096
+        }
+      }
+    },
+    "chunked_jax_fallback_fallback_scan": {
+      "model_name": "chunked JAX fallback (fallback_scan)",
+      "variant": "fallback_scan",
+      "Hk": 12,
+      "Hv": 24,
+      "K": 128,
+      "V": 128,
+      "seq_len": 8192,
+      "forward_ms": 8.635635375976562,
+      "forward_backward_ms": 28.02172088623047,
+      "prefill_ms": 8.629474639892578,
+      "prefill_tokens_per_second": 949304.6033335322,
+      "decode": null
+    }
+  }
+}

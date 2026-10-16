@@ -32,6 +32,7 @@ def chunk_gdn(
     fallback_scan: bool = False,
     is_inference: bool = False,
     fuse_prologue: bool = False,
+    recompute_states: bool = False,
 ) -> jax.Array | tuple[jax.Array, jax.Array]:
     """Gated DeltaNet forward pass on Google Cloud TPU.
 
@@ -59,6 +60,8 @@ def chunk_gdn(
         is_inference: Run in forward-only inference mode without saving backward residuals. Defaults to False.
         fuse_prologue: Fuse decay exponentiation (-exp(min(g, 5.0))), gate sigmoid (sigmoid(beta)),
             and q/k L2-normalization into VMEM prologue. Requires qk_l2norm=True. Defaults to False.
+        recompute_states: In backward pass, recompute chunk boundary states on the fly instead of stashing
+            them in forward memory. Defaults to False.
 
     Returns:
         Output tensor of shape (B, L, Hv, V), or tuple of (output, final_state).
@@ -81,6 +84,7 @@ def chunk_gdn(
         fallback_scan=fallback_scan,
         is_inference=is_inference,
         fuse_prologue=fuse_prologue,
+        recompute_states=recompute_states,
     )
 
 
@@ -102,6 +106,7 @@ def chunk_kda(
     fallback_scan: bool = False,
     is_inference: bool = False,
     fuse_prologue: bool = False,
+    recompute_states: bool = False,
 ) -> jax.Array | tuple[jax.Array, jax.Array]:
     """Kimi Delta Attention (KDA) forward pass on Google Cloud TPU.
 
@@ -129,6 +134,7 @@ def chunk_kda(
         is_inference: Run in forward-only inference mode without saving backward residuals. Defaults to False.
         fuse_prologue: Fuse decay exponentiation (-exp(min(g, 5.0))), gate sigmoid (sigmoid(beta)),
             and q/k L2-normalization into VMEM prologue. Requires qk_l2norm=True. Defaults to False.
+        recompute_states: In backward pass, recompute chunk boundary states on the fly. Defaults to False.
 
     Returns:
         Output tensor of shape (B, L, Hv, V), or tuple of (output, final_state).
@@ -151,6 +157,7 @@ def chunk_kda(
         fallback_scan=fallback_scan,
         is_inference=is_inference,
         fuse_prologue=fuse_prologue,
+        recompute_states=recompute_states,
     )
 
 
@@ -170,6 +177,7 @@ def chunk_gla(
     qk_l2norm: bool = False,
     fallback_scan: bool = False,
     is_inference: bool = False,
+    recompute_states: bool = False,
 ) -> jax.Array | tuple[jax.Array, jax.Array]:
     """Gated Linear Attention (GLA) forward pass on Google Cloud TPU.
 
@@ -190,6 +198,7 @@ def chunk_gla(
         qk_l2norm: Whether to apply in-kernel L2 norm to query and key. Defaults to False.
         fallback_scan: Use pure-JAX chunked scan fallback instead of Pallas. Defaults to False.
         is_inference: Run in forward-only inference mode without saving backward residuals. Defaults to False.
+        recompute_states: In backward pass, recompute chunk boundary states on the fly. Defaults to False.
 
     Returns:
         Output tensor of shape (B, L, Hv, V), or tuple of (output, final_state).
@@ -208,6 +217,7 @@ def chunk_gla(
         qk_l2norm=qk_l2norm,
         fallback_scan=fallback_scan,
         is_inference=is_inference,
+        recompute_states=recompute_states,
     )
 
 
@@ -227,6 +237,7 @@ def chunk_delta_rule(
     qk_l2norm: bool = False,
     fallback_scan: bool = False,
     is_inference: bool = False,
+    recompute_states: bool = False,
 ) -> jax.Array | tuple[jax.Array, jax.Array]:
     """DeltaNet (plain delta rule without decay) forward pass on Google Cloud TPU.
 
@@ -247,6 +258,7 @@ def chunk_delta_rule(
         qk_l2norm: Whether to apply in-kernel L2 norm to query and key. Defaults to False.
         fallback_scan: Use pure-JAX chunked scan fallback instead of Pallas. Defaults to False.
         is_inference: Run in forward-only inference mode without saving backward residuals. Defaults to False.
+        recompute_states: In backward pass, recompute chunk boundary states on the fly. Defaults to False.
 
     Returns:
         Output tensor of shape (B, L, Hv, V), or tuple of (output, final_state).
@@ -269,6 +281,7 @@ def chunk_delta_rule(
         qk_l2norm=qk_l2norm,
         fallback_scan=fallback_scan,
         is_inference=is_inference,
+        recompute_states=recompute_states,
     )
 
 

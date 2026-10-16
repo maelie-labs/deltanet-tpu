@@ -39,7 +39,7 @@ pip install "deltanet-tpu[tpu]"
 
 For local CPU testing: `pip install "deltanet-tpu[dev]"`.
 
-Requires Python `>=3.12`, `jax>=0.11.2,<0.12`, and a TPU (tested on TPU v6e and TPU v5e on Google Cloud and Colab). For local testing without TPU hardware, non-TPU backends run interpret mode (slow CPU emulation executing kernel loops in Python). Run tests with `pytest` on TPU hardware, or `PALLAS_INTERPRET=1 pytest` on CPU.
+Requires Python `>=3.12`, `jax>=0.11.2,<0.12`, and a TPU (0.3.0 tested on TPU v6e on Google Cloud; earlier versions also on TPU v5e). For local testing without TPU hardware, non-TPU backends run interpret mode (slow CPU emulation executing kernel loops in Python). Run tests with `pytest` on TPU hardware, or `PALLAS_INTERPRET=1 pytest` on CPU.
 
 ## Inputs
 
@@ -47,11 +47,13 @@ Requires Python `>=3.12`, `jax>=0.11.2,<0.12`, and a TPU (tested on TPU v6e and 
 - `v`: Value tensor of shape `(B, L, Hv, V)`.
 - `g`: Log-decay tensor of shape `(B, L, Hk, K)`, `(B, L, Hk, 1)`, `(B, L, Hk)`, or `(B, L, Hv)`. Values must satisfy `g <= 0`; positive values are automatically clamped to `0.0` (with zero gradient on clamped values). Example: `g = -jnp.exp(A_log) * jax.nn.softplus(a + dt_bias)`.
 - `b`, `w`, `beta`: Erase, write, or shared gate tensors. In `chunk_gdn`, `beta` has per-head shape `(B, L, Hk)`, `(B, L, Hv)`, `(B, L, Hk, 1)`, or `(B, L, Hv, 1)`. In `chunk_gdn2`, `b` has shape `(B, L, Hk, K)` and `w` has shape `(B, L, Hv, V)`.
-- Data types: Inputs are upcast to float32 internally. Setting `precision="bf16"` uses bfloat16 matrix multiplication operands and keeps intermediate chunk matrices in bfloat16, with float32 accumulation and float32 carried state. Output matches the dtype of `v`. Gradients are returned in each input's dtype.
-- Grouped heads: Value head `j` corresponds to key head `j // G`, where `G = Hv // Hk`. If `g` or `beta` has `Hv` heads, `q` and `k` repeat across `Hv` heads.
+- Data types: Inputs keep their dtype in HBM and are upcast to float32 inside the kernels. Setting `precision="bf16"` uses bfloat16 matrix multiplication operands and keeps intermediate chunk matrices in bfloat16, with float32 accumulation and float32 carried state. Output matches the dtype of `v`. Gradients are returned in each input's dtype. With bfloat16 inputs, the scaled (or normalized) q and k are stored in bfloat16 and gradients of broadcast or per-head gates are rounded to bfloat16 before they are summed; pass float32 inputs when gradient accuracy matters more than memory.
+- Grouped heads: Value head `j` corresponds to key head `j // G`, where `G = Hv // Hk`. If `g` or `beta` has `Hv` heads, each value head reads the `q` and `k` of its key head.
 - Packed documents: `segment_ids` of shape `(B, L)` resets hidden state where the ID changes; this is the preferred, jit-friendly document boundary representation. `cu_seqlens` (1D array or list) is also supported and applies document boundaries to every batch row.
-- State: Carried recurrent state tensor has shape `(B, Hv, K, V)` in float32. In decode, `state_dtype="bfloat16"` allows storing the recurrent state in HBM as bfloat16 between steps (halves the state's bytes), while internal updates execute in float32. Note: bf16 state validated for channel-wise GDN-2 only; scalar-decay decode not validated.
+- State: Carried recurrent state tensor has shape `(B, Hv, K, V)` in float32. When a packed sequence is split across calls or chips, pass `initial_state_segment_id` (the segment ID of the token that produced `initial_state`) to `chunk_gdn2`; if token 0 belongs to a different document, the initial state is reset there. In decode, `state_dtype="bfloat16"` allows storing the recurrent state in HBM as bfloat16 between steps (halves the state's bytes), while internal updates execute in float32. Note: bf16 state validated for channel-wise GDN-2 only; scalar-decay decode not validated.
 - Prologue fusion: Passing `fuse_prologue=True` fuses decay exponentiation, gate sigmoids, and q/k L2-normalization directly into the Pallas VMEM prepass kernel. Under `fuse_prologue=True`, g, b, and w are pre-activation inputs: g is the raw log decay magnitude (`g_act = -exp(min(g, 5.0))`), b is the erase gate logit (`b_act = sigmoid(b)`), and w is the write gate logit (`w_act = sigmoid(w)`). Requires `qk_l2norm=True`. In backward, exact analytical adjoints are evaluated directly in VMEM instead of materializing activated intermediate tensors.
+- Long sequences: `recompute_states=True` makes the backward pass recompute chunk states instead of saving them (slower, less residual memory). For forward-only prefill (`is_inference=True`), `streaming_prefill=True` processes the sequence in blocks of `prefill_block_size` tokens and passes the state between them, so intermediate buffers are bounded by the block size.
+- Optional guards and precision (all off by default): `stability_guard=True` clamps the erase gate to `b >= 0` and the log-decay to `g <= -1e-6`, and caps at `stability_tau` the Frobenius norm of the state returned by a forward-only call or a decode step (and of the state passed between streaming-prefill blocks); the training path is not capped. `mask_lambda_by_doc=True` restricts the within-chunk cumulative decay to same-document pairs, which avoids precision loss in a document that follows a strongly decayed one. `state_fp32_matmul=True` runs the state recurrence at full float32 precision under `precision="bf16"` (slower). `truncate_bwd_dT_bf16=True` restores the pre-0.3.0 bfloat16 rounding in the backward pass.
 - Training: Use `jax.value_and_grad` on your loss function. Checkpoint tags (`gdn_W`, `gdn_U`, `gdn_M`, `gdn_qe`, `gdn_ke`, `gdn_lend`, `gdn_T`) allow remat (rematerialization: trading compute for memory by recomputing forward operations during backward); JAX checkpoint policies match these names from inside the custom VJP. `is_inference=True` is forward-only and raises ValueError if differentiated.
 - Decode: `gdn2_decode_step` and variant decode steps process single tokens of shape `(B, Hk, K)` and `(B, Hv, V)`, with optional `reset=` boolean per batch row and optional `state_dtype=` (`"float32"` or `"bfloat16"`, defaulting to `"float32"`). Note: bf16 state validated for channel-wise GDN-2 only; scalar-decay decode not validated.
 
@@ -124,7 +126,7 @@ Per head, with state S (K x V, float32) where `exp(g_t)` scales the K rows of S:
 `o_t = S^T (scale * q_t)`
 When `qk_l2norm=True`, query and key are normalized as `k_hat = k / sqrt(||k||^2 + 1e-6)` and `q_hat = scale * q / sqrt(||q||^2 + 1e-6)` (`qk_l2norm=False` skips normalization). S resets to zero where `segment_ids` changes (`initial_state` applies to the first segment only). GDN, KDA and DeltaNet set `b = w = beta`; GLA sets `b = 0, w = 1`.
 
-When `Hv > Hk` (grouped value heads), key-side operations execute once per key head and broadcast across value head groups `G = Hv // Hk`.
+When `Hv > Hk` (grouped value heads) and `g` and `b` have `Hk` heads, key-side operations execute once per key head and broadcast across value head groups `G = Hv // Hk`. When `g` or `b` has `Hv` heads, the kernel runs once per value head (see Limitations).
 
 ## Correctness
 
@@ -139,23 +141,24 @@ Kernel outputs and gradients are verified against a token-serial reference (`ref
 - State continuity: passing recurrent state between split chunks matches single-call execution.
 - Sharding: numerical outputs match within 1e-5 under `jax.shard_map` across batch and head partitions on a 1-device mesh.
 - Inference: split prefill chunks match single-call execution; N decode steps match chunked execution with document resets.
-- Hardware test suite: 341 tests pass on TPU v6e (0.2.1); 0.2.0 also passed on TPU v5e. Raw logs: `benchmarks/results/tpu_v6e_test_0.2.1.log`, `benchmarks/results/tpu_v6e_test_0.2.0.log`, and `benchmarks/results/tpu_v5e_test_0.2.0.log`.
+- Long-sequence options: `recompute_states=True` gives the same outputs (relative L2 < 1e-6) and gradients as the default path; streaming prefill matches single-pass prefill, including document resets at block boundaries, 1D segment IDs and padding; a document starting at token 0 with `initial_state_segment_id` gives the same result as no initial state.
+- Hardware test suite: 380 tests pass on one TPU v6e chip (0.3.0; 0 failed, 0 skipped). Raw log: `benchmarks/results/tpu_v6e_test_0.3.0.log`. Logs for earlier versions: `benchmarks/results/tpu_v6e_test_0.2.1.log`, `benchmarks/results/tpu_v6e_test_0.2.0.log`, and `benchmarks/results/tpu_v5e_test_0.2.0.log`.
 
 ## Benchmarks
 
 ### Public Model Layer Shapes (TPU v6e, 1 Chip)
 
-Measured on Google Cloud TPU v6e (1 chip, batch B=1, sequence length 8,192, float32 inputs, precision `bf16`, JAX 0.11.2, libtpu 0.0.48). Decode times report per-step time with 100 steps queued (step-by-step synchronous latency with a sync after each step in parentheses):
+Measured with version 0.3.0 on 2026-10-16 on Google Cloud TPU v6e (1 chip, batch B=1, sequence length 8,192, float32 inputs, precision `bf16`, JAX 0.11.2, libtpu 0.0.48.1; results in `benchmarks/results/public_shapes_benchmark_0.3.0.json`). Decode times report per-step time with 100 steps queued (step-by-step synchronous latency with a sync after each step in parentheses):
 
 | Model Layer | Variant | (Hk, Hv, K, V) | Forward (B=1) | Forward + Backward | Prefill Latency (Throughput) | Decode B=1 | Decode B=8 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| GDN-2 (12 key / 24 value heads) | `chunk_gdn2` | (12, 24, 128, 128) | 4.98 ms | 9.58 ms | 4.93 ms (1,662,203 tok/s) | 0.0619 ms (0.2135 ms) | 0.0434 ms (0.2583 ms) |
-| Qwen3.5-2B GDN | `chunk_gdn` | (16, 16, 128, 128) | 5.79 ms | 11.18 ms | 5.75 ms (1,424,791 tok/s) | 0.0619 ms (0.2359 ms) | 0.0592 ms (0.2435 ms) |
-| Qwen3.5-4B / Qwen3-Next GDN | `chunk_gdn` | (16, 32, 128, 128) | 11.87 ms | 23.31 ms | 11.71 ms (699,860 tok/s) | 0.0564 ms (0.2359 ms) | 0.0588 ms (0.3074 ms) |
-| Kimi Linear KDA | `chunk_kda` | (32, 32, 128, 128) | 11.82 ms | 22.87 ms | 11.61 ms (705,618 tok/s) | 0.0591 ms (0.2310 ms) | 0.0549 ms (0.2849 ms) |
-| chunked JAX fallback (`fallback_scan`) | `chunk_gdn2` | (12, 24, 128, 128) | 8.94 ms | 28.08 ms | 8.90 ms (920,916 tok/s) | - | - |
+| GDN-2 (12 key / 24 value heads) | `chunk_gdn2` | (12, 24, 128, 128) | 4.85 ms | 9.34 ms | 4.77 ms (1,716,970 tok/s) | 0.0418 ms (0.1867 ms) | 0.0411 ms (0.2123 ms) |
+| Qwen3.5-2B GDN | `chunk_gdn` | (16, 16, 128, 128) | 5.63 ms | 10.93 ms | 5.61 ms (1,459,207 tok/s) | 0.0392 ms (0.1920 ms) | 0.0402 ms (0.2039 ms) |
+| Qwen3.5-4B / Qwen3-Next GDN | `chunk_gdn` | (16, 32, 128, 128) | 11.37 ms | 22.52 ms | 11.29 ms (725,442 tok/s) | 0.0393 ms (0.1964 ms) | 0.0421 ms (0.2187 ms) |
+| Kimi Linear KDA | `chunk_kda` | (32, 32, 128, 128) | 11.67 ms | 22.51 ms | 11.49 ms (712,746 tok/s) | 0.0392 ms (0.1923 ms) | 0.0453 ms (0.2230 ms) |
+| chunked JAX fallback (`fallback_scan`) | `chunk_gdn2` | (12, 24, 128, 128) | 8.64 ms | 28.02 ms | 8.63 ms (949,305 tok/s) | - | - |
 
-Shape (16, 16) matches Qwen3.5-2B; (16, 32) matches Qwen3.5-4B and Qwen3-Next (from published `config.json` files). On TPU v5e, prefill reaches 1.31M tok/s (GDN-2), 1.15M tok/s (Qwen3.5-2B), and 516k tok/s (Qwen3.5-4B); see `benchmarks/results/public_shapes_v5e.json`.
+Shape (16, 16) matches Qwen3.5-2B; (16, 32) matches Qwen3.5-4B and Qwen3-Next (from published `config.json` files). On TPU v5e (measured with version 0.1.0), prefill reaches 1.31M tok/s (GDN-2), 1.15M tok/s (Qwen3.5-2B), and 516k tok/s (Qwen3.5-4B); see `benchmarks/results/public_shapes_v5e.json`.
 
 The analytical backward pass makes it possible to train or fine-tune the linear-attention recurrence core of Gated DeltaNet hybrids such as Qwen3.5 on TPU; projections, convolution, gating and sharding come from your framework.
 
@@ -167,11 +170,11 @@ The analytical backward pass makes it possible to train or fine-tune the linear-
 
 ## Limitations
 
-- Tuned on TPU v6e (Trillium); tested on TPU v6e and TPU v5e. TPU v4, TPU v5p, and TPU v7 are untested.
+- Tuned on TPU v6e (Trillium). 0.3.0 is tested on TPU v6e; 0.2.0 was also tested on TPU v5e. TPU v4, TPU v5p, and TPU v7 are untested.
 - Head dimensions K and V must be 128; chunk size must be 128.
 - Grouped heads require Hv to be an integer multiple of Hk.
-- Per-value-head gates (Hv > Hk where g or beta has Hv heads, e.g. Qwen3.5-4B) require repeating q and k to Hv heads, disabling grouped-head fusion (11.87 ms vs 5.79 ms for 16 key heads).
-- Single-token decode (`gdn2_decode_step`) is pure vectorized JAX and is dispatch-bound (limited by kernel launch overhead on host/runtime rather than TPU compute or memory bandwidth; 0.043–0.062 ms across batch sizes 1 to 8).
+- Per-value-head gates (Hv > Hk where g or beta has Hv heads, e.g. Qwen3.5-4B) run one kernel instance per value head instead of fusing the group (11.37 ms vs 5.63 ms for 16 key heads in the table above).
+- Single-token decode (`gdn2_decode_step`) is pure vectorized JAX and is dispatch-bound (limited by kernel launch overhead on host/runtime rather than TPU compute or memory bandwidth; 0.039–0.045 ms per step across batch sizes 1 to 8).
 
 ## Acknowledgements
 

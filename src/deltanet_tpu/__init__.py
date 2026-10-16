@@ -12,7 +12,7 @@ from deltanet_tpu.variants import (
     kda_decode_step,
 )
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     "chunk_gdn2",
